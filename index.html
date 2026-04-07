@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pacific Maritime Boundaries</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <style>
+        body { 
+            padding: 0; 
+            margin: 0; 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #map { 
+            height: 100vh; 
+            width: 100vw; 
+        }
+        
+        /* Main Title Design */
+        .map-title {
+            background: white;
+            padding: 12px 18px;
+            border-radius: 6px;
+            box-shadow: 0 3px 6px rgba(0,0,0,0.3);
+            font-size: 20px;
+            font-weight: bold;
+            color: #222;
+            border: 2px solid rgba(0,0,0,0.1);
+        }
+
+        /* Hover Tooltip Design */
+        .zone-tooltip {
+            background: rgba(255, 255, 255, 0.95);
+            border: 1px solid #333;
+            font-weight: bold;
+            font-size: 14px;
+            color: #333;
+        }
+        
+        .leaflet-popup-content-wrapper {
+            border-radius: 8px;
+            padding: 0; 
+            box-shadow: 0 5px 15px rgba(0,0,0,0.4);
+            overflow: hidden;
+        }
+        .leaflet-popup-content {
+            margin: 0;
+            width: 300px !important; 
+        }
+        .popup-header {
+            padding: 15px;
+            font-size: 18px;
+            font-weight: bold;
+            color: white;
+            text-align: center;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
+        }
+        .popup-body {
+            padding: 15px 20px;
+            background: #fdfdfd;
+            font-size: 15px;
+            line-height: 1.6;
+            color: #333;
+        }
+        .popup-label {
+            font-size: 12px;
+            text-transform: uppercase;
+            color: #777;
+            font-weight: bold;
+            margin-top: 10px;
+            margin-bottom: 2px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        var map = L.map('map', {
+            worldCopyJump: true 
+        }).setView([0, 150], 4);
+
+        // --- 1. LEAFLET PANES SETUP FOR Z-INDEX ---
+        map.createPane('pane_buffer');
+        map.getPane('pane_buffer').style.zIndex = 400; // Bottom (Ocean)
+        
+        map.createPane('pane_admin');
+        map.getPane('pane_admin').style.zIndex = 410;  // Middle (Land)
+        
+        map.createPane('pane_treaty');
+        map.getPane('pane_treaty').style.zIndex = 420; // Top (Boundary Line)
+        
+        map.getPane('popupPane').style.zIndex = 700;
+
+        var esriTopo = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', {
+            attribution: 'Tiles &copy; Esri',
+            noWrap: false
+        }).addTo(map);
+
+        var esriSatellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            attribution: 'Tiles &copy; Esri',
+            noWrap: false
+        });
+
+        // Grid Layer
+        var gridLayer = L.layerGroup();
+        var gridStyle = { color: '#333', weight: 0.8, opacity: 0.4, dashArray: '5, 5' };
+        for (var lat = -80; lat <= 80; lat += 20) {
+            L.polyline([[lat, -360], [lat, 360]], gridStyle).bindTooltip("Lat: " + lat).addTo(gridLayer);
+        }
+        for (var lng = -360; lng <= 360; lng += 20) {
+            L.polyline([[-80, lng], [80, lng]], gridStyle).bindTooltip("Lon: " + lng).addTo(gridLayer);
+        }
+        gridLayer.addTo(map);
+
+        // --- ZONE TYPE IDENTIFICATION FUNCTION ---
+        function getFeatureType(feature) {
+            var geomType = feature.geometry.type;
+            var name = (feature.properties.COUNTRY || "").toLowerCase();
+            
+            if (geomType.includes("LineString") || name.includes("treaty") || name.includes("line")) {
+                return 'treaty';
+            } else if (name.includes("adm")) {
+                return 'admin';
+            } else {
+                return 'buffer';
+            }
+        }
+
+        // --- RESTORED COLOR STYLING ---
+        function styleFeature(feature) {
+            var type = getFeatureType(feature);
+            
+            if (type === 'treaty') {
+                // Treaty Line: Strong, high-contrast Blue
+                return { pane: 'pane_treaty', color: '#0000FF', weight: 5, opacity: 1, dashArray: '6, 6' };
+            } else if (type === 'admin') {
+                // LAND (Admin): Back to Solid Yellow
+                return { pane: 'pane_admin', color: '#b38f00', weight: 2, opacity: 1, fillColor: '#ffcc00', fillOpacity: 0.8 };
+            } else {
+                // OCEAN (Buffer): Back to Cyan/Light Blue
+                return { pane: 'pane_buffer', color: '#42d4f4', weight: 1.5, opacity: 0.8, fillColor: '#42d4f4', fillOpacity: 0.45 };
+            }
+        }
+
+        // --- POPUP ---
+        function onEachFeatureInteraction(feature, layer) {
+            var type = getFeatureType(feature);
+            var rawName = feature.properties.COUNTRY || "Unknown Boundary";
+            
+            // CLEAN UP THE NAME: Replace "Adm" and "Buffer" dynamically
+            var zoneName = rawName.replace(/Adm\s/i, "Administrative Area: ")
+                                  .replace(/Buffer\s/i, "Maritime Zone: ");
+            
+            var zoneColor = '#42d4f4'; // Cyan default
+            var typeLabel = "Maritime Zone (Buffer)";
+            var textColor = "white";
+            
+            if (type === 'treaty') {
+                zoneName = rawName; // Keep standard Treaty name
+                zoneColor = '#0000FF'; // Blue header
+                typeLabel = "Maritime Treaty Line";
+                
+                layer.on('mouseover', function(e) { this.setStyle({ weight: 8 }); });
+                layer.on('mouseout', function(e) { this.setStyle({ weight: 5 }); });
+                
+            } else if (type === 'admin') {
+                zoneColor = '#ffcc00'; // Yellow header
+                typeLabel = "Administrative Area";
+                textColor = "#333";
+            }
+
+            // Apply cleaned name to Tooltip
+            layer.bindTooltip(zoneName, { sticky: true, className: 'zone-tooltip' });
+
+            // Apply cleaned name to Popup
+            var popupHTML = `
+                <div class="popup-header" style="background-color: ${zoneColor}; color: ${textColor};">
+                    ${zoneName}
+                </div>
+                <div class="popup-body">
+                    <div class="popup-label">Entity Information</div>
+                    <div>Pacific Island Nation</div>
+                    
+                    <div class="popup-label">Data Category</div>
+                    <div>${typeLabel}</div>
+                    
+                    <div class="popup-label">Geometry Type</div>
+                    <div>${feature.geometry.type}</div>
+                </div>
+            `;
+            
+            layer.bindPopup(popupHTML);
+        }
+
+        var pasifikLayer = L.layerGroup();
+
+        // Load GeoJSON 
+        fetch('pacific_data_fixed.geojson') 
+            .then(response => {
+                if (!response.ok) throw new Error("Failed to load GeoJSON");
+                return response.json();
+            })
+            .then(data => {
+                var offsets = [-360, 0, 360];
+                
+                offsets.forEach(function(offset) {
+                    L.geoJSON(data, {
+                        style: styleFeature,
+                        onEachFeature: onEachFeatureInteraction,
+                        pane: function(feature) {
+                            return 'pane_' + getFeatureType(feature);
+                        },
+                        coordsToLatLng: function (coords) {
+                            var longitude = coords[0];
+                            var latitude = coords[1];
+                            if (longitude < 0) { longitude = longitude + 360; }
+                            return new L.LatLng(latitude, longitude + offset);
+                        }
+                    }).addTo(pasifikLayer);
+                });
+            })
+            .catch(err => console.error("Error loading GeoJSON: ", err));
+
+        pasifikLayer.addTo(map);
+
+        L.control.layers({ "Esri Topo": esriTopo, "Esri Satellite": esriSatellite }, { "Pacific Boundaries": pasifikLayer, "Coordinate Grid": gridLayer }, { position: 'topright' }).addTo(map);
+
+        var titleControl = L.control({ position: 'topleft' });
+        titleControl.onAdd = function (map) {
+            var div = L.DomUtil.create('div', 'map-title');
+            div.innerHTML = 'Pacific Maritime Boundaries';
+            return div;
+        };
+        titleControl.addTo(map);
+
+        L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(map);
+
+    </script>
+</body>
+</html>
